@@ -281,12 +281,16 @@ rdiv!(B::AbstractVecOrMat, A::SymTridiagonal; shift::Number=false) = rdiv!(B, ld
 
 # tridiagonal eigensolver meta-algorithm from LAPACK.syevr! for alg==RobustRepresentations()
 #   - if all eigenvalues are desired, call stev == sterf (eigvals) or stegr == stemr (eigen)
+#   - if stegr returns vectors that fail _looks_orthogonal, call stev
 #   - otherwise, and also if an error occurs, fall back to stebz and (if eigvecs wanted) stein
 function syevr_tri_eigen(range::AbstractChar, dv::AbstractVector{T}, ev::AbstractVector{T}, vl::Real, vu::Real, il::Integer, iu::Integer; sortby = eigsortby) where {T<:BlasReal}
     if range == 'A' || (range == 'I' && il == 1 && iu == length(dv))
         try
             # need to copy dv, ev so that they are available for fallbacks, below
             values, vectors = LAPACK.stegr!('V', range, copymutable(dv), copymutable(ev), vl, vu, il, iu)
+            if !_looks_orthogonal(vectors)
+                values, vectors = LAPACK.stev!('V', copymutable(dv), copymutable(ev))
+            end
             return Eigen(sorteig!(values, vectors, sortby == eigsortby ? nothing : sortby)...)
         catch ex
             ex isa LAPACKException || rethrow()

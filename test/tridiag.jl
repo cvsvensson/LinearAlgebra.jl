@@ -1336,4 +1336,19 @@ end
     @test_throws "asymmetric value" LinearAlgebra.fillband!(SymTridiagonal([M, M], [M]), [1 2; 3 4], 0, 0)
 end
 
+@testset "eigenvectors with info = 0 stay orthogonal" begin
+    S = SymTridiagonal(zeros(4), [5e-16, 5e-16, 1.0])
+    M = Matrix(S)
+    S32 = SymTridiagonal(zeros(Float32, 4), Float32[1e-6, 1e-6, 1])
+    for (A, F) in ((S, eigen(S)), (S, eigen(S, 1:4)), (M, eigen(Symmetric(M))), (M, eigen(Symmetric(M, :L))),
+                   (M, eigen(Symmetric(M), 1:4)), (M, eigen(Hermitian(complex(M)))), (S32, eigen(S32)))
+        V = F.vectors
+        @test opnorm(V'V - I) < 100eps(real(eltype(V)))
+        @test V * Diagonal(F.values) * V' ≈ A
+    end
+    # the fallback must not return an array that aliases the input
+    base = zeros(6, 6); base[1:4, 1:4] = M
+    @test eigen!(Symmetric(view(base, 1:4, 1:4))).vectors isa Matrix
+end
+
 end # module TestTridiagonal

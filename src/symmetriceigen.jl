@@ -18,6 +18,16 @@ Defaults to `LinearAlegbra.RobustRepresentations()`, which corresponds to the LA
 """
 default_eigen_alg(@nospecialize(A)) = RobustRepresentations()
 
+# syevr! and stegr! can return non-orthogonal vectors with info = 0 (Reference-LAPACK/lapack#151).
+# This compares V'(Vx) with x for a fixed ±1 vector x, at the cost of two matvecs. A bad pair with
+# overlap δ gives δ, unless a larger cluster cancels. Ordinary matrices reached about 13n*eps, or
+# 1734eps for n < 128, so the tolerance leaves about a factor of 5.
+function _looks_orthogonal(V::AbstractMatrix{T}) where {T}
+    R = real(T)
+    x = [iseven(count_ones(i)) ? one(R) : -one(R) for i in axes(V, 2)]
+    return norm(V' * (V * x) - x, Inf) <= 64 * max(size(V, 2), 128) * eps(R)
+end
+
 # Eigensolvers for symmetric and Hermitian matrices
 function eigen!(A::RealHermSymComplexHerm{<:BlasReal,<:StridedMatrix}; alg::Algorithm = default_eigen_alg(A), sortby::Union{Function,Nothing}=eigsortby)
     sortby2 = sortby == eigsortby ? nothing : sortby # eigsortby is done by LAPACK.syev*
@@ -26,7 +36,17 @@ function eigen!(A::RealHermSymComplexHerm{<:BlasReal,<:StridedMatrix}; alg::Algo
     elseif alg === QRIteration()
         Eigen(sorteig!(LAPACK.syev!('V', A.uplo, A.data)..., sortby2)...)
     elseif alg === RobustRepresentations()
-        Eigen(sorteig!(LAPACK.syevr!('V', 'A', A.uplo, A.data, 0.0, 0.0, 0, 0, -1.0)..., sortby2)...)
+        # syevr! destroys A.uplo and the diagonal but not the other triangle, which keeps A for the fallback
+        LAPACK.chkuplofinite(A.data, A.uplo)
+        d = diag(A.data)
+        copytri!(A.data, A.uplo, true)
+        values, vectors = LAPACK.syevr!('V', 'A', A.uplo, A.data, 0.0, 0.0, 0, 0, -1.0)
+        if !_looks_orthogonal(vectors)
+            A.data[diagind(A.data)] = d
+            values, V = LAPACK.syev!('V', A.uplo == 'U' ? 'L' : 'U', A.data)
+            copyto!(vectors, V)
+        end
+        Eigen(sorteig!(values, vectors, sortby2)...)
     else
         throw(ArgumentError("Unsupported value for `alg` keyword."))
     end
@@ -44,7 +64,7 @@ Iterating the decomposition produces the components `F.values` and `F.vectors`.
 `alg` specifies which algorithm and LAPACK method to use for eigenvalue decomposition:
 - `alg = DivideAndConquer()`: Calls `LAPACK.syevd!`.
 - `alg = QRIteration()`: Calls `LAPACK.syev!`.
-- `alg = RobustRepresentations()` (default): Multiple relatively robust representations method, Calls `LAPACK.syevr!`.
+- `alg = RobustRepresentations()` (default): Multiple relatively robust representations method, Calls `LAPACK.syevr!`, then `LAPACK.syev!` if the vectors fail an orthogonality check.
 
 See James W. Demmel et al, SIAM J. Sci. Comput. 30, 3, 1508 (2008) for
 a comparison of the accuracy and performance of different algorithms.
@@ -75,6 +95,7 @@ function _eigen(A::RealHermSymComplexHerm{Float16}; alg::Algorithm, sortby::Unio
 end
 
 eigen!(A::RealHermSymComplexHerm{<:BlasReal,<:StridedMatrix}, irange::UnitRange) =
+    irange == axes(A, 1) ? eigen!(A; alg = RobustRepresentations()) :
     Eigen(LAPACK.syevr!('V', 'I', A.uplo, A.data, 0.0, 0.0, irange.start, irange.stop, -1.0)...)
 
 """
