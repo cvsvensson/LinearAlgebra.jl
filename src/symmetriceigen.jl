@@ -20,12 +20,12 @@ default_eigen_alg(@nospecialize(A)) = RobustRepresentations()
 
 # syevr! and stegr! can return non-orthogonal vectors with info = 0 (Reference-LAPACK/lapack#151).
 # This compares V'(Vx) with x for a fixed ±1 vector x, at the cost of two matvecs. A bad pair with
-# overlap δ gives δ, unless a larger cluster cancels. Ordinary matrices reached about 13n*eps, or
-# 1734eps for n < 128, so the tolerance leaves about a factor of 5.
+# overlap δ gives δ, unless a larger cluster cancels. The tolerance is the geometric mean of n*eps,
+# the scale of a good solver's error, and 1, the scale of a failed one.
 function _looks_orthogonal(V::AbstractMatrix{T}) where {T}
     R = real(T)
     x = [iseven(count_ones(i)) ? one(R) : -one(R) for i in axes(V, 2)]
-    return norm(V' * (V * x) - x, Inf) <= 64 * max(size(V, 2), 128) * eps(R)
+    return norm(V' * (V * x) - x, Inf) <= sqrt(size(V, 2) * eps(R))
 end
 
 # Eigensolvers for symmetric and Hermitian matrices
@@ -37,6 +37,7 @@ function eigen!(A::RealHermSymComplexHerm{<:BlasReal,<:StridedMatrix}; alg::Algo
         Eigen(sorteig!(LAPACK.syev!('V', A.uplo, A.data)..., sortby2)...)
     elseif alg === RobustRepresentations()
         # syevr! destroys A.uplo and the diagonal but not the other triangle, which keeps A for the fallback
+        chkstride1(A.data)
         LAPACK.chkuplofinite(A.data, A.uplo)
         d = diag(A.data)
         copytri!(A.data, A.uplo, true)
